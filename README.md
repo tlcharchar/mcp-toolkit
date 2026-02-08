@@ -2,6 +2,10 @@
 
 Python SDK for simplified creation of MCP Servers (Model Context Protocol).
 
+<p align="center">
+  <img src="sdk-architecture.png" alt="MCP Toolkit — SDK Architecture" width="100%">
+</p>
+
 ## Overview
 
 MCP Toolkit lets developers build MCP Servers declaratively and pythonically, with first-class support for exposing existing REST APIs as MCP tools.
