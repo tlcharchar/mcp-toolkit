@@ -2,6 +2,7 @@
 Testes unitários para MCP Toolkit.
 """
 
+import inspect
 import json
 import pytest
 from typing import Optional
@@ -19,7 +20,9 @@ from mcp_toolkit import (
     AuthType,
     ResponseFormat,
 )
+from mcp_toolkit.types import ToolResult
 from mcp_toolkit.adapters import RestApiAdapter
+from mcp_toolkit.adapters.openapi import OpenAPIParser
 from mcp_toolkit.auth import api_key, bearer, basic, validate_auth
 
 
@@ -550,3 +553,202 @@ class TestIntegration:
         # Lê resource
         data = await server.read_resource("data://test")
         assert data == "data_test"
+
+
+# ============================================================================
+# Test Parameter Deduplication & Ordering
+# ============================================================================
+
+
+class TestParameterDeduplication:
+    """Testes para deduplicação e ordenação de parâmetros."""
+
+    def test_tool_definition_deduplicates_parameters(self):
+        """ToolDefinition deve remover parâmetros com nomes duplicados."""
+        tool_def = ToolDefinition(
+            name="test_dedup",
+            description="Tool com params duplicados",
+            parameters=[
+                ToolParameter(name="username", type="string", description="From path", required=True),
+                ToolParameter(name="email", type="string", description="Email", required=True),
+                ToolParameter(name="username", type="string", description="From body", required=False),
+            ],
+        )
+
+        names = [p.name for p in tool_def.parameters]
+        assert names.count("username") == 1
+        # Primeira ocorrência (required) deve ser mantida
+        username_param = next(p for p in tool_def.parameters if p.name == "username")
+        assert username_param.required is True
+
+    def test_tool_definition_orders_required_before_optional(self):
+        """ToolDefinition deve ordenar required antes de optional."""
+        tool_def = ToolDefinition(
+            name="test_order",
+            description="Tool com ordem misturada",
+            parameters=[
+                ToolParameter(name="user_id", type="string", description="Path param", required=True),
+                ToolParameter(name="include_details", type="boolean", description="Query", required=False),
+                ToolParameter(name="name", type="string", description="Body required", required=True),
+                ToolParameter(name="email", type="string", description="Body optional", required=False),
+            ],
+        )
+
+        params = tool_def.parameters
+        # Required devem vir primeiro
+        required_indices = [i for i, p in enumerate(params) if p.required]
+        optional_indices = [i for i, p in enumerate(params) if not p.required]
+        assert max(required_indices) < min(optional_indices)
+
+    def test_rest_adapter_orders_mixed_required_optional(self):
+        """RestApiAdapter deve ordenar required antes de optional mesmo com parâmetros misturados."""
+        adapter = RestApiAdapter(base_url="https://api.example.com")
+
+        tool_def = adapter.as_tool(
+            method="POST",
+            path="/users/{user_id}",
+            name="update_user",
+            description="Atualiza usuário",
+            query_params=[
+                ToolParameter(name="dry_run", type="boolean", description="Dry run", required=False, default=False),
+            ],
+            body_params=[
+                ToolParameter(name="name", type="string", description="Nome", required=True),
+                ToolParameter(name="bio", type="string", description="Bio", required=False),
+            ],
+        )
+
+        params = tool_def.parameters
+        required_names = [p.name for p in params if p.required]
+        optional_names = [p.name for p in params if not p.required]
+
+        # user_id e name devem ser required
+        assert "user_id" in required_names
+        assert "name" in required_names
+        # dry_run e bio devem ser optional
+        assert "dry_run" in optional_names
+        assert "bio" in optional_names
+
+        # Todos os required devem vir antes dos optional
+        required_indices = [i for i, p in enumerate(params) if p.required]
+        optional_indices = [i for i, p in enumerate(params) if not p.required]
+        if required_indices and optional_indices:
+            assert max(required_indices) < min(optional_indices)
+
+    def test_rest_adapter_deduplicates_parameters(self):
+        """RestApiAdapter deve remover parâmetros duplicados."""
+        adapter = RestApiAdapter(base_url="https://api.example.com")
+
+        tool_def = adapter.as_tool(
+            method="PUT",
+            path="/users/{username}",
+            name="update_user",
+            description="Atualiza usuário",
+            body_params=[
+                ToolParameter(name="username", type="string", description="Body username", required=False),
+                ToolParameter(name="email", type="string", description="Email", required=True),
+            ],
+        )
+
+        names = [p.name for p in tool_def.parameters]
+        assert names.count("username") == 1
+
+    def test_handler_wrapper_with_duplicate_params(self):
+        """_create_handler_wrapper deve lidar com parâmetros duplicados sem crash."""
+        server = MCPServer("test_dedup_wrapper_mcp")
+
+        async def handler(**kwargs):
+            return str(kwargs)
+
+        params = [
+            ToolParameter(name="username", type="string", description="Path", required=True),
+            ToolParameter(name="email", type="string", description="Email", required=True),
+            ToolParameter(name="username", type="string", description="Body dup", required=False),
+        ]
+
+        # Não deve lançar ValueError
+        wrapped = server._create_handler_wrapper(handler, params)
+        sig = inspect.signature(wrapped)
+        param_names = list(sig.parameters.keys())
+
+        # Deve ter username apenas uma vez
+        assert param_names.count("username") == 1
+        assert "email" in param_names
+
+    def test_handler_wrapper_orders_required_before_optional(self):
+        """_create_handler_wrapper deve criar assinatura com required antes de optional."""
+        server = MCPServer("test_order_wrapper_mcp")
+
+        async def handler(**kwargs):
+            return str(kwargs)
+
+        params = [
+            ToolParameter(name="user_id", type="string", description="Path", required=True),
+            ToolParameter(name="filter", type="string", description="Query", required=False),
+            ToolParameter(name="name", type="string", description="Body", required=True),
+        ]
+
+        wrapped = server._create_handler_wrapper(handler, params)
+        sig = inspect.signature(wrapped)
+        sig_params = list(sig.parameters.values())
+
+        # Verifica que required vêm antes de optional
+        required_indices = [
+            i for i, p in enumerate(sig_params) if p.default is inspect.Parameter.empty
+        ]
+        optional_indices = [
+            i for i, p in enumerate(sig_params) if p.default is not inspect.Parameter.empty
+        ]
+
+        if required_indices and optional_indices:
+            assert max(required_indices) < min(optional_indices)
+
+    def test_openapi_parser_deduplicates_body_params(self):
+        """OpenAPIParser deve deduplicar params que aparecem no path/query E no body."""
+        spec = {
+            "openapi": "3.0.0",
+            "info": {"title": "Test", "version": "1.0.0"},
+            "servers": [{"url": "http://localhost:8000"}],
+            "paths": {},
+        }
+        parser = OpenAPIParser(spec)
+
+        operation = {
+            "path": "/users/{username}",
+            "method": "PUT",
+            "operation_id": "updateUser",
+            "summary": "Update user",
+            "description": "Updates a user",
+            "tags": [],
+            "parameters": [
+                {
+                    "name": "username",
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string"},
+                }
+            ],
+            "request_body": {
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "username": {"type": "string", "description": "Username"},
+                                "email": {"type": "string", "description": "Email"},
+                            },
+                            "required": ["email"],
+                        }
+                    }
+                }
+            },
+            "responses": {},
+        }
+
+        tool_def = parser.operation_to_tool_definition(operation)
+        names = [p.name for p in tool_def.parameters]
+
+        # username deve aparecer apenas uma vez
+        assert names.count("username") == 1
+        # email deve estar presente
+        assert "email" in names

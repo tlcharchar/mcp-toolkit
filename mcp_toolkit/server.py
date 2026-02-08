@@ -499,7 +499,7 @@ class MCPServer:
             "object": dict,
         }
 
-        param_names = [p.name for p in parameters]
+        param_names = {p.name for p in parameters}
 
         async def async_wrapper(**kwargs: Any) -> Any:
             filtered = {k: v for k, v in kwargs.items() if k in param_names}
@@ -513,14 +513,22 @@ class MCPServer:
         wrapper.__name__ = handler.__name__
         wrapper.__doc__ = handler.__doc__
 
-        # Define assinatura explícita para o FastMCP gerar o schema correto
-        sig_params = []
+        # Define assinatura explícita para o FastMCP gerar o schema correto.
+        # Deduplica nomes (primeira ocorrência vence) e ordena:
+        # required (sem default) primeiro, optional (com default) depois.
+        # Isso evita ValueError do inspect.Signature.
+        required_sig_params = []
+        optional_sig_params = []
         annotations: Dict[str, Any] = {}
+        seen_names: set = set()
         for p in parameters:
+            if p.name in seen_names:
+                continue
+            seen_names.add(p.name)
             py_type = type_mapping.get(p.type.lower(), str)
             annotations[p.name] = py_type
             if p.required:
-                sig_params.append(
+                required_sig_params.append(
                     inspect.Parameter(
                         p.name,
                         inspect.Parameter.POSITIONAL_OR_KEYWORD,
@@ -530,7 +538,7 @@ class MCPServer:
             else:
                 # Usa default real (incluindo False, 0, "") - não só None
                 default_val = p.default
-                sig_params.append(
+                optional_sig_params.append(
                     inspect.Parameter(
                         p.name,
                         inspect.Parameter.POSITIONAL_OR_KEYWORD,
@@ -539,6 +547,7 @@ class MCPServer:
                     )
                 )
 
+        sig_params = required_sig_params + optional_sig_params
         wrapper.__signature__ = inspect.Signature(sig_params)
         wrapper.__annotations__ = annotations
         return wrapper

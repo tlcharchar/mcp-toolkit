@@ -258,12 +258,21 @@ class RestApiAdapter:
         if annotations is None:
             annotations = self._default_annotations(method)
         
-        # Combina todos os parâmetros
-        all_params = list(path_params)
+        # Combina todos os parâmetros (required primeiro, optional depois)
+        all_params_unsorted = list(path_params)
         if query_params:
-            all_params.extend(query_params)
+            all_params_unsorted.extend(query_params)
         if body_params and method in (HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH):
-            all_params.extend(body_params)
+            all_params_unsorted.extend(body_params)
+
+        # Deduplica (mantém primeira ocorrência) e ordena: required antes de optional
+        seen: set = set()
+        all_params = []
+        for p in all_params_unsorted:
+            if p.name not in seen:
+                seen.add(p.name)
+                all_params.append(p)
+        all_params.sort(key=lambda p: (not p.required, p.name))
         
         # Nome com prefixo
         full_name = f"{self.prefix}{name}" if self.prefix else name

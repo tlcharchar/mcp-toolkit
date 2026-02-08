@@ -116,9 +116,9 @@ class ToolParameter(BaseModel):
 
 class ToolDefinition(BaseModel):
     """Definição completa de uma tool MCP."""
-    
+
     model_config = ConfigDict(extra="forbid")
-    
+
     name: str = Field(..., description="Nome único da tool")
     description: str = Field(..., description="Descrição da tool")
     parameters: List[ToolParameter] = Field(
@@ -134,6 +134,27 @@ class ToolDefinition(BaseModel):
         exclude=True,
         description="Função handler da tool"
     )
+
+    @field_validator("parameters")
+    @classmethod
+    def sanitize_parameters(cls, v: List["ToolParameter"]) -> List["ToolParameter"]:
+        """
+        Sanitiza a lista de parâmetros:
+        1. Remove duplicatas (mantém primeira ocorrência)
+        2. Ordena: required primeiro, optional depois (mantém ordem relativa dentro de cada grupo)
+        """
+        # Deduplica mantendo ordem
+        seen: set = set()
+        unique: List[ToolParameter] = []
+        for p in v:
+            if p.name not in seen:
+                seen.add(p.name)
+                unique.append(p)
+
+        # Ordena: required primeiro, depois optional (stable sort preserva ordem relativa)
+        required = [p for p in unique if p.required]
+        optional = [p for p in unique if not p.required]
+        return required + optional
     
     def to_json_schema(self) -> Dict[str, Any]:
         """Converte a definição para JSON Schema."""

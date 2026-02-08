@@ -231,19 +231,23 @@ class OpenAPIParser:
                 maximum=schema.get("maximum"),
             ))
         
-        # Request body
+        # Request body (deduplica parâmetros que já vieram de path/query)
         request_body = operation.get("request_body")
         if request_body:
             # Resolve $ref
             if "$ref" in request_body:
                 request_body = self._resolve_ref(request_body["$ref"])
-            
+
             content = request_body.get("content", {})
             json_content = content.get("application/json", {})
             schema = json_content.get("schema", {})
-            
+
+            existing_names = {p.name for p in parameters}
             body_params = self._schema_to_parameters(schema)
-            parameters.extend(body_params)
+            for bp in body_params:
+                if bp.name not in existing_names:
+                    parameters.append(bp)
+                    existing_names.add(bp.name)
         
         # Annotations
         method = operation["method"]
