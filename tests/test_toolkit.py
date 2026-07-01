@@ -752,3 +752,66 @@ class TestParameterDeduplication:
         assert names.count("username") == 1
         # email deve estar presente
         assert "email" in names
+
+    def test_openapi_parser_handles_xquik_search_contract(self):
+        """OpenAPIParser deve preservar params, enum e limites em spec OpenAPI 3.1."""
+        spec = {
+            "openapi": "3.1.0",
+            "info": {"title": "Xquik API", "version": "2.4.8"},
+            "servers": [{"url": "https://xquik.com"}],
+            "paths": {
+                "/api/v1/x/tweets/search": {
+                    "get": {
+                        "operationId": "searchTweets",
+                        "summary": "Search X posts",
+                        "tags": ["X"],
+                        "parameters": [
+                            {
+                                "name": "q",
+                                "in": "query",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            },
+                            {
+                                "name": "queryType",
+                                "in": "query",
+                                "schema": {
+                                    "type": "string",
+                                    "enum": ["Latest", "Top"],
+                                    "default": "Latest",
+                                },
+                            },
+                            {
+                                "name": "limit",
+                                "in": "query",
+                                "schema": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 200,
+                                    "default": 20,
+                                },
+                            },
+                        ],
+                        "responses": {"200": {"description": "Search results"}},
+                    }
+                }
+            },
+        }
+        parser = OpenAPIParser(spec)
+
+        operations = parser.list_operations()
+        tool_def = parser.operation_to_tool_definition(operations[0])
+        params = {p.name: p for p in tool_def.parameters}
+
+        assert parser.base_url == "https://xquik.com"
+        assert parser.title == "Xquik API"
+        assert tool_def.name == "search_tweets"
+        assert tool_def.description == "Search X posts"
+        assert tool_def.annotations.read_only_hint is True
+        assert params["q"].required is True
+        assert params["queryType"].enum == ["Latest", "Top"]
+        assert params["queryType"].default == "Latest"
+        assert params["limit"].type == "integer"
+        assert params["limit"].default == 20
+        assert params["limit"].minimum == 1
+        assert params["limit"].maximum == 200
